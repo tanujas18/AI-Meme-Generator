@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createMemes } from '../server/memes-core.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -7,6 +6,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    const { createMemes } = await import('../server/memes-core.js');
     const memes = await createMemes(req.body?.category);
     res.status(200).json({ memes });
   } catch (err: any) {
