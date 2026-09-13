@@ -15,15 +15,15 @@ const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
 // NOTE: OpenRouter's free catalog changes often. If these all 404, run
 // `GET https://openrouter.ai/api/v1/models` and swap in current `:free` ids
 // (or set OPENROUTER_MODEL in .env).
-// Ordered by Hinglish quality (bigger models = more coherent desi humour).
+// Ordered by SPEED (fastest first) for Vercel 10s/60s timeout limits.
 const FREE_MODELS = [
-  process.env.OPENROUTER_MODEL, // optional override from .env
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'google/gemma-4-31b-it:free',
-  'openai/gpt-oss-20b:free',
-  'google/gemma-4-26b-a4b-it:free',
-  'nvidia/nemotron-3-nano-30b-a3b:free',
-  'inclusionai/ling-3.0-flash:free',
+  process.env.OPENROUTER_MODEL, // override from .env (fastest flash model)
+  'inclusionai/ling-3.0-flash:free',      // fastest: flash model ~2-5s
+  'openai/gpt-oss-20b:free',              // backup: 20B params ~5-10s
+  'google/gemma-4-26b-a4b-it:free',       // backup: 26B params ~10-15s
+  'nvidia/nemotron-3-nano-30b-a3b:free',  // backup: 30B params ~15-20s
+  'google/gemma-4-31b-it:free',           // slower: 31B params ~20-30s
+  'nvidia/nemotron-3-super-120b-a12b:free', // slowest: 120B params ~30-60s
 ].filter(Boolean);
 
 // templates: [{ id, lines, brief }]  ->  [{ top, bottom }] (one per template)
@@ -85,35 +85,49 @@ function buildPrompt(theme, templates) {
 }
 
 async function callModel(apiKey, model, prompt) {
-  const res = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are a savage desi meme writer who thinks in Hinglish and knows ' +
-            'every classic meme template by heart. You always reply with valid JSON.',
-        },
-        { role: 'user', content: prompt },
-      ],
-      temperature: 0.9,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
 
-  // fetch does NOT throw on 4xx/5xx — check res.ok yourself (Week 1, Slide 22).
-  if (!res.ok) {
-    throw new Error(`OpenRouter responded ${res.status} for ${model}`);
+  try {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a savage desi meme writer who thinks in Hinglish and knows ' +
+              'every classic meme template by heart. You always reply with valid JSON.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.9,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    // fetch does NOT throw on 4xx/5xx — check res.ok yourself (Week 1, Slide 22).
+    if (!res.ok) {
+      throw new Error(`OpenRouter responded ${res.status} for ${model}`);
+    }
+
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content ?? '';
+    return parseMemes(text);
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error(`Model ${model} timed out after 25s`);
+    }
+    throw err;
   }
-
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content ?? '';
-  return parseMemes(text);
 }
 
 // Models sometimes wrap JSON in ``` fences or add stray text. Parse leniently.
